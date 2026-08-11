@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>Gym Tracker</title>
+<meta name="theme-color" content="#121017" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Gym Tracker" />
+<meta name="mobile-web-app-capable" content="yes" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="icon" href="icon-192.png" />
+<link rel="manifest" href="manifest.json" />
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" crossorigin></script>
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; background: #121017; overscroll-behavior-y: contain; }
+  body { font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; color: #EDEAF4; }
+  .sg { font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; }
+  .day-box { transition: transform 120ms ease, background 150ms ease, border-color 150ms ease; }
+  .day-box:active { transform: scale(0.94); }
+  .tab-btn, .chip, .menu-btn { transition: background 150ms ease, color 150ms ease, border-color 150ms ease; }
+  .chip:active, .menu-btn:active { transform: scale(0.97); }
+  ::-webkit-scrollbar { height: 6px; }
+  ::-webkit-scrollbar-thumb { background: #2c2a37; border-radius: 4px; }
+  #root { min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+const MONTHS = [
+  { name: "January", short: "Jan", color: "#FFADAD" },
+  { name: "February", short: "Feb", color: "#FFD6A5" },
+  { name: "March", short: "Mar", color: "#FDFFB6" },
+  { name: "April", short: "Apr", color: "#CAFFBF" },
+  { name: "May", short: "May", color: "#9BF6FF" },
+  { name: "June", short: "Jun", color: "#A0C4FF" },
+  { name: "July", short: "Jul", color: "#BDB2FF" },
+  { name: "August", short: "Aug", color: "#FFC6FF" },
+  { name: "September", short: "Sep", color: "#FFB4A2" },
+  { name: "October", short: "Oct", color: "#E4C1F9" },
+  { name: "November", short: "Nov", color: "#B9FBC0" },
+  { name: "December", short: "Dec", color: "#F1C0E8" },
+];
+
+const BODY_PARTS = ["Chest", "Back", "Shoulders", "Legs", "Arms", "Core", "Cardio", "Full Body"];
+const STORAGE_KEY = "gym-tracker-checked-days";
+const WEEKLY_GOAL = 3;
+
+function daysInMonth(year, monthIndex) {
+  return new Date(year, monthIndex + 1, 0).getDate();
+}
+function keyFor(year, monthIndex) {
+  return `${year}-${monthIndex}`;
+}
+function getWeekStart(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  const day = d.getDay();
+  const diff = day === 0 ? 6 : day - 1;
+  d.setDate(d.getDate() - diff);
+  return d;
+}
+function formatWeekRange(weekStart) {
+  const end = new Date(weekStart);
+  end.setDate(end.getDate() + 6);
+  const opts = { month: "short", day: "numeric" };
+  return `${weekStart.toLocaleDateString(undefined, opts)} – ${end.toLocaleDateString(undefined, opts)}`;
+}
+
+// ---- persistence: plain localStorage since this runs as a standalone installed app ----
+function loadData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    return {};
+  }
+}
+function saveData(data) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// ---- export helpers ----
+function flattenEntries(data) {
+  const rows = [];
+  Object.keys(data).sort().forEach((k) => {
+    const [yStr, mIdxStr] = k.split("-");
+    const y = parseInt(yStr, 10);
+    const mIdx = parseInt(mIdxStr, 10);
+    const md = data[k] || {};
+    Object.keys(md)
+      .map(Number)
+      .sort((a, b) => a - b)
+      .forEach((d) => {
+        const parts = md[String(d)] || [];
+        if (parts.length > 0) {
+          const dateObj = new Date(y, mIdx, d);
+          rows.push({
+            Date: dateObj.toLocaleDateString(),
+            Weekday: dateObj.toLocaleDateString(undefined, { weekday: "long" }),
+            Month: MONTHS[mIdx].name,
+            Year: y,
+            "Body Parts": parts.join(", "),
+          });
+        }
+      });
+  });
+  return rows;
+}
+
+function exportExcel(data) {
+  const rows = flattenEntries(data);
+  if (rows.length === 0) {
+    alert("No workouts logged yet — nothing to export.");
+    return;
+  }
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws["!cols"] = [{ wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 6 }, { wch: 30 }];
+  XLSX.utils.book_append_sheet(wb, ws, "Workouts");
+
+  // Summary sheet: times per body part, all-time
+  const counts = {};
+  rows.forEach((r) => {
+    r["Body Parts"].split(", ").forEach((p) => {
+      counts[p] = (counts[p] || 0) + 1;
+    });
+  });
+  const summaryRows = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([part, count]) => ({ "Body Part": part, "Times Trained": count }));
+  const ws2 = XLSX.utils.json_to_sheet(summaryRows);
+  ws2["!cols"] = [{ wch: 14 }, { wch: 14 }];
+  XLSX.utils.book_append_sheet(wb, ws2, "Summary");
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `gym-tracker-${stamp}.xlsx`);
+}
+
+function exportPDF(data, bestWeekStreak) {
+  const rows = flattenEntries(data);
+  if (rows.length === 0) {
+    alert("No workouts logged yet — nothing to export.");
+    return;
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  let y = 20;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.text("Gym Tracker Report", 14, y);
+  y += 8;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(110, 107, 130);
+  doc.text(`Generated ${new Date().toLocaleDateString()}`, 14, y);
+  y += 10;
+
+  doc.setTextColor(20, 20, 20);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.text(`Total workouts logged: ${rows.length}`, 14, y);
+  y += 6;
+  doc.text(`Best streak: ${bestWeekStreak} consecutive week(s) with 3+ days`, 14, y);
+  y += 10;
+
+  // Body part totals
+  const counts = {};
+  rows.forEach((r) => {
+    r["Body Parts"].split(", ").forEach((p) => {
+      counts[p] = (counts[p] || 0) + 1;
+    });
+  });
+  doc.setFontSize(13);
+  doc.text("Body Part Totals", 14, y);
+  y += 7;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .forEach(([part, count]) => {
+      doc.text(`${part}: ${count}`, 16, y);
+      y += 5.5;
+      if (y > pageHeight - 20) {
+        doc.addPage();
+        y = 20;
+      }
+    });
+
+  y += 6;
+  if (y > pageHeight - 30) {
+    doc.addPage();
+    y = 20;
+  }
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(13);
+  doc.text("Workout Log", 14, y);
+  y += 8;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9.5);
+  rows.forEach((r) => {
+    if (y > pageHeight - 15) {
+      doc.addPage();
+      y = 20;
+    }
+    doc.text(`${r.Date}  (${r.Weekday})`, 16, y);
+    doc.text(r["Body Parts"], 70, y);
+    y += 5.5;
+  });
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  doc.save(`gym-tracker-${stamp}.pdf`);
+}
+
+function GymTracker() {
+  const today = new Date();
+  const [year] = useState(today.getFullYear());
+  const [monthIndex, setMonthIndex] = useState(today.getMonth());
+  const [data, setData] = useState(() => loadData());
+  const [error, setError] = useState(null);
+  const [selectedDay, setSelectedDay] = useState(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const persist = useCallback((next) => {
+    const ok = saveData(next);
+    setError(ok ? null : "Couldn't save — your browser may be blocking storage.");
+  }, []);
+
+  const monthKey = keyFor(year, monthIndex);
+  const monthData = data[monthKey] || {};
+
+  const toggleBodyPart = (day, part) => {
+    const dayKey = String(day);
+    const current = new Set(monthData[dayKey] || []);
+    if (current.has(part)) current.delete(part);
+    else current.add(part);
+    const nextMonthData = { ...monthData };
+    if (current.size === 0) delete nextMonthData[dayKey];
+    else nextMonthData[dayKey] = Array.from(current);
+    const next = { ...data, [monthKey]: nextMonthData };
+    setData(next);
+    persist(next);
+  };
+
+  const clearDay = (day) => {
+    const dayKey = String(day);
+    const nextMonthData = { ...monthData };
+    delete nextMonthData[dayKey];
+    const next = { ...data, [monthKey]: nextMonthData };
+    setData(next);
+    persist(next);
+    setSelectedDay(null);
+  };
+
+  const month = MONTHS[monthIndex];
+  const totalDays = daysInMonth(year, monthIndex);
+  const checkedDaysThisMonth = useMemo(
+    () => new Set(Object.keys(monthData).filter((d) => (monthData[d] || []).length > 0).map(Number)),
+    [monthData]
+  );
+
+  const currentStreak = useMemo(() => {
+    const isCurrentMonth = monthIndex === today.getMonth() && year === today.getFullYear();
+    const startDay = isCurrentMonth ? today.getDate() : totalDays;
+    let streak = 0;
+    for (let d = startDay; d >= 1; d--) {
+      if (checkedDaysThisMonth.has(d)) streak++;
+      else break;
+    }
+    return streak;
+  }, [checkedDaysThisMonth, monthIndex, totalDays]);
+
+  const allEntries = useMemo(() => {
+    const entries = [];
+    Object.keys(data).forEach((k) => {
+      const [yStr, mIdxStr] = k.split("-");
+      const y = parseInt(yStr, 10);
+      const mIdx = parseInt(mIdxStr, 10);
+      const md = data[k] || {};
+      Object.keys(md).forEach((dStr) => {
+        const parts = md[dStr] || [];
+        if (parts.length > 0) entries.push({ date: new Date(y, mIdx, parseInt(dStr, 10)), parts });
+      });
+    });
+    return entries;
+  }, [data]);
+
+  const weeksMap = useMemo(() => {
+    const map = new Map();
+    allEntries.forEach(({ date, parts }) => {
+      const ws = getWeekStart(date);
+      const wk = ws.toISOString().slice(0, 10);
+      if (!map.has(wk)) map.set(wk, { start: ws, dayCount: 0, partCounts: {} });
+      const entry = map.get(wk);
+      entry.dayCount += 1;
+      parts.forEach((p) => { entry.partCounts[p] = (entry.partCounts[p] || 0) + 1; });
+    });
+    return map;
+  }, [allEntries]);
+
+  const bestWeekStreak = useMemo(() => {
+    if (weeksMap.size === 0) return 0;
+    const starts = Array.from(weeksMap.values()).map((w) => w.start.getTime()).sort((a, b) => a - b);
+    const minTime = starts[0];
+    const maxTime = starts[starts.length - 1];
+    let best = 0, run = 0;
+    for (let t = minTime; t <= maxTime; t += 7 * 24 * 60 * 60 * 1000) {
+      const wk = new Date(t).toISOString().slice(0, 10);
+      const w = weeksMap.get(wk);
+      if (w && w.dayCount >= WEEKLY_GOAL) { run += 1; best = Math.max(best, run); }
+      else run = 0;
+    }
+    return best;
+  }, [weeksMap]);
+
+  const currentWeekSummary = useMemo(() => {
+    const ws = getWeekStart(today);
+    const wk = ws.toISOString().slice(0, 10);
+    return weeksMap.get(wk) || { start: ws, dayCount: 0, partCounts: {} };
+  }, [weeksMap]);
+
+  const monthlyPartCounts = useMemo(() => {
+    const counts = {};
+    Object.keys(monthData).forEach((dStr) => {
+      (monthData[dStr] || []).forEach((p) => { counts[p] = (counts[p] || 0) + 1; });
+    });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  }, [monthData]);
+
+  const monthTotals = useMemo(() => {
+    return MONTHS.map((_, idx) => {
+      const md = data[keyFor(year, idx)] || {};
+      const count = Object.keys(md).filter((d) => (md[d] || []).length > 0).length;
+      return { count, total: daysInMonth(year, idx) };
+    });
+  }, [data, year]);
+
+  const goMonth = (delta) => {
+    setMonthIndex((m) => Math.min(11, Math.max(0, m + delta)));
+    setSelectedDay(null);
+  };
+
+  const selectedDayParts = selectedDay ? monthData[String(selectedDay)] || [] : [];
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#121017", color: "#EDEAF4", padding: "28px 16px 60px" }}>
+      <div style={{ maxWidth: 720, margin: "0 auto" }}>
+
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 34, height: 34, borderRadius: 10, background: `${month.color}22`, border: `1px solid ${month.color}55`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>
+              🏋️
+            </div>
+            <h1 className="sg" style={{ fontSize: 22, fontWeight: 700, margin: 0, letterSpacing: "-0.01em" }}>Gym Tracker</h1>
+          </div>
+          <div style={{ position: "relative" }}>
+            <button
+              className="menu-btn"
+              onClick={() => setMenuOpen((o) => !o)}
+              style={{ background: "#18161f", border: "1px solid #26232f", borderRadius: 10, color: "#B4B0C4", padding: "8px 10px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+            >
+              Export ⋯
+            </button>
+            {menuOpen && (
+              <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", background: "#1E1B27", border: "1px solid #2A2735", borderRadius: 12, padding: 6, zIndex: 10, minWidth: 160, boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+                <button
+                  className="menu-btn"
+                  onClick={() => { exportExcel(data); setMenuOpen(false); }}
+                  style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", color: "#EDEAF4", padding: "9px 10px", fontSize: 13.5, borderRadius: 8, cursor: "pointer" }}
+                >
+                  📊 Export Excel
+                </button>
+                <button
+                  className="menu-btn"
+                  onClick={() => { exportPDF(data, bestWeekStreak); setMenuOpen(false); }}
+                  style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", color: "#EDEAF4", padding: "9px 10px", fontSize: 13.5, borderRadius: 8, cursor: "pointer" }}
+                >
+                  📄 Export PDF
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+        <p style={{ margin: "0 0 22px 44px", fontSize: 13.5, color: "#8B87A0" }}>
+          Tap a day, then log what you trained. Every month gets its own color.
+        </p>
+
+        {/* Month tabs */}
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 10, marginBottom: 18 }}>
+          {MONTHS.map((m, idx) => {
+            const active = idx === monthIndex;
+            return (
+              <button key={m.name} className="tab-btn" onClick={() => { setMonthIndex(idx); setSelectedDay(null); }}
+                style={{ flexShrink: 0, padding: "8px 14px", borderRadius: 999, border: active ? `1px solid ${m.color}` : "1px solid #26232f", background: active ? `${m.color}20` : "#18161f", color: active ? m.color : "#8B87A0", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                {m.short}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Stats row */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 22 }}>
+          {[
+            { label: "This month", value: `${checkedDaysThisMonth.size}/${totalDays}` },
+            { label: "Current streak", value: currentStreak, icon: true },
+            { label: "Best streak (wks)", value: bestWeekStreak },
+          ].map((s) => (
+            <div key={s.label} style={{ background: "#18161f", border: "1px solid #26232f", borderRadius: 14, padding: "12px 14px" }}>
+              <div style={{ fontSize: 11, color: "#6E6B82", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.04em" }}>{s.label}</div>
+              <div className="sg" style={{ fontSize: 20, fontWeight: 700, display: "flex", alignItems: "center", gap: 5 }}>
+                {s.icon && s.value > 0 && <span style={{ fontSize: 15 }}>🔥</span>}
+                {s.value}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Month nav + grid */}
+        <div style={{ background: "#18161f", border: `1px solid ${month.color}30`, borderRadius: 18, padding: "18px 16px", marginBottom: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+            <button onClick={() => goMonth(-1)} disabled={monthIndex === 0} style={{ background: "none", border: "none", color: monthIndex === 0 ? "#3a3746" : "#8B87A0", cursor: monthIndex === 0 ? "default" : "pointer", padding: 6, fontSize: 18 }}>‹</button>
+            <div className="sg" style={{ fontSize: 16, fontWeight: 600, color: month.color }}>{month.name} {year}</div>
+            <button onClick={() => goMonth(1)} disabled={monthIndex === 11} style={{ background: "none", border: "none", color: monthIndex === 11 ? "#3a3746" : "#8B87A0", cursor: monthIndex === 11 ? "default" : "pointer", padding: 6, fontSize: 18 }}>›</button>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8 }}>
+            {Array.from({ length: totalDays }, (_, i) => i + 1).map((day) => {
+              const checked = checkedDaysThisMonth.has(day);
+              const isToday = day === today.getDate() && monthIndex === today.getMonth() && year === today.getFullYear();
+              const isSelected = selectedDay === day;
+              return (
+                <button key={day} className="day-box" onClick={() => setSelectedDay(isSelected ? null : day)} aria-pressed={checked}
+                  style={{
+                    aspectRatio: "1", borderRadius: 10,
+                    border: isSelected || checked ? `1px solid ${month.color}` : isToday ? `1px solid ${month.color}70` : "1px solid #2A2735",
+                    boxShadow: isSelected ? `0 0 0 2px ${month.color}40` : "none",
+                    background: checked ? month.color : "#1E1B27",
+                    color: checked ? "#181521" : "#8B87A0",
+                    fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+                  }}>
+                  {checked ? "✓" : day}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Body part picker */}
+        {selectedDay && (
+          <div style={{ background: "#18161f", border: `1px solid ${month.color}45`, borderRadius: 18, padding: "16px", marginBottom: 26 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+              <div className="sg" style={{ fontSize: 14.5, fontWeight: 600 }}>{month.short} {selectedDay} — what did you train?</div>
+              <button onClick={() => setSelectedDay(null)} style={{ background: "none", border: "none", color: "#6E6B82", cursor: "pointer", padding: 4, fontSize: 16 }}>×</button>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: selectedDayParts.length ? 14 : 0 }}>
+              {BODY_PARTS.map((part) => {
+                const isChecked = selectedDayParts.includes(part);
+                return (
+                  <button key={part} className="chip" onClick={() => toggleBodyPart(selectedDay, part)}
+                    style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 12px", borderRadius: 10, border: isChecked ? `1px solid ${month.color}` : "1px solid #2A2735", background: isChecked ? `${month.color}22` : "#1E1B27", color: isChecked ? month.color : "#B4B0C4", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                    <span style={{ width: 15, height: 15, borderRadius: 4, border: isChecked ? "none" : "1px solid #3A3746", background: isChecked ? month.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 10, color: "#181521" }}>
+                      {isChecked && "✓"}
+                    </span>
+                    {part}
+                  </button>
+                );
+              })}
+            </div>
+            {selectedDayParts.length > 0 && (
+              <button onClick={() => clearDay(selectedDay)} style={{ background: "none", border: "none", color: "#6E6B82", fontSize: 12, cursor: "pointer", padding: 0, textDecoration: "underline", textUnderlineOffset: 3 }}>
+                Clear this day
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Weekly + Monthly summaries */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 26 }}>
+          <div style={{ background: "#18161f", border: "1px solid #26232f", borderRadius: 16, padding: "14px" }}>
+            <div style={{ fontSize: 11, color: "#6E6B82", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 2 }}>This week</div>
+            <div style={{ fontSize: 11, color: "#4E4B5F", marginBottom: 10 }}>{formatWeekRange(getWeekStart(today))}</div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 10 }}>
+              <span className="sg" style={{ fontSize: 18, fontWeight: 700, color: currentWeekSummary.dayCount >= WEEKLY_GOAL ? month.color : "#EDEAF4" }}>{currentWeekSummary.dayCount}</span>
+              <span style={{ fontSize: 12, color: "#6E6B82" }}>/ {WEEKLY_GOAL}+ day goal</span>
+            </div>
+            {Object.keys(currentWeekSummary.partCounts).length === 0 ? (
+              <div style={{ fontSize: 12, color: "#4E4B5F" }}>Nothing logged yet</div>
+            ) : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {Object.entries(currentWeekSummary.partCounts).sort((a, b) => b[1] - a[1]).map(([part, count]) => (
+                  <span key={part} style={{ fontSize: 11, fontWeight: 600, color: month.color, background: `${month.color}1a`, border: `1px solid ${month.color}40`, borderRadius: 999, padding: "4px 9px" }}>
+                    {part} × {count}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div style={{ background: "#18161f", border: "1px solid #26232f", borderRadius: 16, padding: "14px" }}>
+            <div style={{ fontSize: 11, color: "#6E6B82", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 2 }}>{month.short} totals</div>
+            <div style={{ fontSize: 11, color: "#4E4B5F", marginBottom: 10 }}>times per body part</div>
+            {monthlyPartCounts.length === 0 ? (
+              <div style={{ fontSize: 12, color: "#4E4B5F" }}>Nothing logged yet</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {monthlyPartCounts.map(([part, count]) => {
+                  const max = monthlyPartCounts[0][1];
+                  return (
+                    <div key={part} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ width: 62, fontSize: 11, color: "#B4B0C4", flexShrink: 0 }}>{part}</div>
+                      <div style={{ flex: 1, height: 6, borderRadius: 999, background: "#1E1B27", overflow: "hidden" }}>
+                        <div style={{ width: `${(count / max) * 100}%`, height: "100%", background: month.color, borderRadius: 999 }} />
+                      </div>
+                      <div style={{ width: 14, fontSize: 11, color: "#6E6B82", textAlign: "right" }}>{count}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Year overview */}
+        <div>
+          <div style={{ fontSize: 11, color: "#6E6B82", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.04em" }}>{year} overview</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+            {MONTHS.map((m, idx) => {
+              const { count, total } = monthTotals[idx];
+              const pct = total ? count / total : 0;
+              return (
+                <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ width: 30, fontSize: 11.5, color: idx === monthIndex ? m.color : "#6E6B82", fontWeight: 600 }}>{m.short}</div>
+                  <div style={{ flex: 1, height: 8, borderRadius: 999, background: "#1E1B27", overflow: "hidden", cursor: "pointer" }} onClick={() => { setMonthIndex(idx); setSelectedDay(null); }}>
+                    <div style={{ width: `${pct * 100}%`, height: "100%", background: m.color, borderRadius: 999, transition: "width 200ms ease" }} />
+                  </div>
+                  <div style={{ width: 34, fontSize: 11, color: "#6E6B82", textAlign: "right" }}>{count}/{total}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {error && <div style={{ marginTop: 16, fontSize: 12, color: "#FFADAD" }}>{error}</div>}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<GymTracker />);
+</script>
+
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("service-worker.js").catch(() => {});
+    });
+  }
+</script>
+</body>
+</html>
